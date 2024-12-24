@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reset & Base styles */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    @apply h-full w-full;
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #app {
+    @apply h-full w-full;
+  }
+
+  /* 移除输入框默认样式 */
+  input, textarea {
+    @apply outline-none;
+  }
+
+  /* 移除按钮默认样式 */
+  button {
+    @apply bg-transparent border-0;
+  }
+
+  /* 移除列表默认样式 */
+  ul, ol {
+    @apply list-none;
+  }
+
+  /* 移除链接默认样式 */
+  a {
+    @apply no-underline text-inherit;
+  }
+}@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reset & Base styles */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    @apply h-full w-full;
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #app {
+    @apply h-full w-full;
+  }
+
+  /* 移除输入框默认样式 */
+  input, textarea {
+    @apply outline-none;
+  }
+
+  /* 移除按钮默认样式 */
+  button {
+    @apply bg-transparent border-0;
+  }
+
+  /* 移除列表默认样式 */
+  ul, ol {
+    @apply list-none;
+  }
+
+  /* 移除链接默认样式 */
+  a {
+    @apply no-underline text-inherit;
+  }
+}
