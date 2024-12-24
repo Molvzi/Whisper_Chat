@@ -21,13 +21,22 @@
         </div>
         <div>
           <label for="apiUrl" class="block text-sm font-medium text-gray-700">API 地址</label>
-          <input
-            id="apiUrl"
-            v-model="apiUrlLocal"
-            type="text"
-            class="mt-1 w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-            placeholder="https://api.example.com/v1"
-          />
+          <div class="flex gap-2 mt-1">
+            <input
+              id="apiUrl"
+              v-model="apiUrlLocal"
+              type="text"
+              class="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+              placeholder="https://api.example.com/v1"
+            />
+            <button
+              @click="testConnection"
+              class="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+              :disabled="!apiUrlLocal || !apiKeyLocal"
+            >
+              检查
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -75,10 +84,30 @@
         emit('update:modelValue', !props.modelValue)
       }
 
+      const testConnection = async () => {
+        try {
+          const response = await fetch(apiUrlLocal.value, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${apiKeyLocal.value}`
+            }
+          })
+
+          if (response.ok) {
+            alert('连接成功！')
+          } else {
+            throw new Error(`HTTP error! status: ${response.status}`)
+          }
+        } catch (error: any) {
+          alert(`连接失败: ${error.message}`)
+        }
+      }
+
       return {
         apiKeyLocal,
         apiUrlLocal,
-        toggleSettings
+        toggleSettings,
+        testConnection
       }
     }
   })

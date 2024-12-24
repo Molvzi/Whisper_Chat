@@ -48,92 +48,47 @@
   </div>
 </template>
 
-<script lang="ts">
-  import { ref } from 'vue'
-  import axios from 'axios'
+<script setup lang="ts">
+  import { ref, inject } from 'vue'
+  import { SpeechRecognitionService } from '../services/speechRecognition'
+  import { SpeechSynthesisService } from '../services/speechSynthesis'
+  import { AIService } from '../services/ai'
   import ApiSettings from './ApiSettings.vue'
 
-  export default {
-    components: {
-      ApiSettings
-    },
-    setup() {
-      const transcript = ref('')
-      const aiResponse = ref('')
-      const isListening = ref(false)
-      const error = ref('')
-      const showSettings = ref(false)
-      const apiKey = ref('')
-      const apiUrl = ref('')
+  const transcript = ref('')
+  const aiResponse = ref('')
+  const isListening = ref(false)
+  const error = ref('')
+  const showSettings = ref(false)
+  const apiKey = ref('')
+  const apiUrl = ref('')
 
-      const startRecognition = () => {
-        const SpeechRecognition =
-          (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        if (!SpeechRecognition) {
-          error.value = '您的浏览器不支持语音识别'
-          return
-        }
+  const speechRecognition = new SpeechRecognitionService()
+  const speechSynthesis = new SpeechSynthesisService()
 
-        const recognition = new SpeechRecognition()
-        recognition.lang = 'zh-CN'
-        recognition.continuous = false
-        recognition.interimResults = false
-
-        recognition.onstart = () => {
-          isListening.value = true
-          error.value = ''
-        }
-
-        recognition.onend = () => {
-          isListening.value = false
-        }
-
-        recognition.onerror = (event: any) => {
-          error.value = `识别错误: ${event.error}`
-          isListening.value = false
-        }
-
-        recognition.onresult = async (event: any) => {
-          transcript.value = event.results[0][0].transcript
-          await getAIResponse(transcript.value)
-        }
-
+  const startRecognition = () => {
+    speechRecognition.start({
+      onStart: () => {
+        isListening.value = true
+        error.value = ''
+      },
+      onEnd: () => {
+        isListening.value = false
+      },
+      onError: (err) => {
+        error.value = `识别错误: ${err}`
+        isListening.value = false
+      },
+      onResult: async (text) => {
+        transcript.value = text
         try {
-          recognition.start()
-        } catch (err) {
-          error.value = '启动语音识别失败'
-          isListening.value = false
+          const aiService = new AIService(apiUrl.value, apiKey.value)
+          aiResponse.value = await aiService.getResponse(text)
+          speechSynthesis.speak(aiResponse.value)
+        } catch (err: any) {
+          error.value = err.message
         }
       }
-
-      const speakAIResponse = (text: string) => {
-        const utterance = new SpeechSynthesisUtterance(text)
-        utterance.lang = 'zh-CN'
-        utterance.rate = 1.0
-        utterance.pitch = 1.0
-        window.speechSynthesis.speak(utterance)
-      }
-
-      const getAIResponse = async (text: string) => {
-        try {
-          const response = await axios.post('/api/ai', { query: text })
-          aiResponse.value = response.data.response
-          speakAIResponse(aiResponse.value)
-        } catch (error: any) {
-          error.value = `AI响应错误: ${error.message}`
-        }
-      }
-
-      return {
-        transcript,
-        aiResponse,
-        startRecognition,
-        isListening,
-        error,
-        showSettings,
-        apiKey,
-        apiUrl
-      }
-    }
+    })
   }
 </script>
