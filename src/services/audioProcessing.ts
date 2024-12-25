@@ -58,21 +58,33 @@ export class AudioProcessor {
   // 3. 发送音频到语音识别模型
   async sendToSpeechRecognition(audioBlob: Blob): Promise<string> {
     try {
-      const formData = new FormData()
-      formData.append('audio', audioBlob)
+      const apiUrl = localStorage.getItem('apiUrl')
+      const apiKey = localStorage.getItem('apiKey')
 
-      // 这里替换为实际的 API 端点
-      const response = await fetch('YOUR_SPEECH_RECOGNITION_API_ENDPOINT', {
+      if (!apiUrl || !apiKey) {
+        throw new Error('API settings not configured')
+      }
+
+      const formData = new FormData()
+      formData.append('file', audioBlob) // 注意：参数名改为 'file'
+      formData.append('model', 'FunAudioLLM/SenseVoiceSmall') // 使用官方支持的模型
+
+      const response = await fetch(`${apiUrl}/audio/transcriptions`, {
         method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+          // 注意：使用 FormData 时不要设置 Content-Type，浏览器会自动设置正确的值
+        },
         body: formData
       })
 
       if (!response.ok) {
-        throw new Error('Speech recognition request failed')
+        const error = await response.json()
+        throw new Error(error.error?.message || `Speech recognition failed: ${response.status}`)
       }
 
       const result = await response.json()
-      return result.text // 假设 API 返回包含 text 字段的 JSON
+      return result.text
     } catch (error) {
       console.error('Error in speech recognition:', error)
       throw error
