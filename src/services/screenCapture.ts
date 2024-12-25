@@ -4,12 +4,11 @@
  */
 export async function startScreenCapture(): Promise<MediaStream> {
   try {
-    const mediaStream = await navigator.mediaDevices.getDisplayMedia({
-      video: false,
-      audio: true // 启用音频捕获
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true
     })
-
-    return mediaStream
+    return stream
   } catch (error) {
     console.error('Error capturing screen:', error)
     throw error
@@ -28,6 +27,9 @@ export function stopScreenCapture(mediaStream: MediaStream) {
 /**
  * 获取媒体流中的音频轨道
  */
-export function getAudioTrack(mediaStream: MediaStream): MediaStreamTrack | undefined {
-  return mediaStream.getAudioTracks()[0]
+export function getAudioTrack(stream: MediaStream): MediaStreamTrack | null {
+  const audioTrack = stream.getAudioTracks()[0]
+  console.log('Available audio tracks:', stream.getAudioTracks().length)
+  console.log('Audio track constraints:', audioTrack?.getConstraints())
+  return audioTrack || null
 }

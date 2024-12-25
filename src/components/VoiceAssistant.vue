@@ -66,6 +66,7 @@
   import ApiSettings from './ApiSettings.vue'
   import TranscriptionSidebar from './TranscriptionSidebar.vue'
   import { startScreenCapture, stopScreenCapture } from '../services/screenCapture'
+  import { AudioProcessor } from '../services/audioProcessing'
 
   const transcript = ref('')
   const aiResponse = ref('')
@@ -83,33 +84,87 @@
   const transcriptionHistory = ref<string[]>([])
   const timestamps = ref<number[]>([])
 
-  watch(transcript, (newText) => {
-    if (newText) {
-      transcriptionHistory.value.push(newText)
-      timestamps.value.push(Date.now())
-    }
-  })
+  const audioProcessor = ref(new AudioProcessor())
 
-  async function toggleScreenCapture() {
-    if (!isCapturing.value) {
-      try {
-        mediaStream.value = await startScreenCapture()
-        if (videoPreview.value && mediaStream.value) {
-          videoPreview.value.srcObject = mediaStream.value
+  async function startContinuousRecording() {
+    try {
+      isListening.value = true
+      mediaStream.value = await startScreenCapture()
+
+      // 设置音频处理器的回调
+      audioProcessor.value.onTranscription = (text: string) => {
+        if (text.trim()) {
+          // 添加新的识别结果到历史记录
+          transcriptionHistory.value.push(text)
+          timestamps.value.push(Date.now())
+
+          // 更新当前识别结果
+          transcript.value = text
+
+          // 可以在这里添加发送到 AI 模型的逻辑
+          sendToAI(text)
         }
-        isCapturing.value = true
-      } catch (error) {
-        console.error('Failed to start screen capture:', error)
       }
-    } else {
+
+      await audioProcessor.value.startRecording(mediaStream.value)
+      isCapturing.value = true
+    } catch (error: any) {
+      error.value = error.message
+      isListening.value = false
+    }
+  }
+
+  async function stopRecording() {
+    try {
+      audioProcessor.value.stopRecording()
       if (mediaStream.value) {
         stopScreenCapture(mediaStream.value)
-        if (videoPreview.value) {
-          videoPreview.value.srcObject = null
-        }
         mediaStream.value = null
       }
+    } finally {
       isCapturing.value = false
+      isListening.value = false
+    }
+  }
+
+  // 发送文本到 AI 模型
+  async function sendToAI(text: string) {
+    try {
+      const response = await fetch(`${apiUrl.value}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey.value}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: selectedModel.value,
+          messages: [
+            {
+              role: 'user',
+              content: text
+            }
+          ]
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`AI response failed: ${response.status}`)
+      }
+
+      const result = await response.json()
+      aiResponse.value = result.choices[0].message.content
+    } catch (error: any) {
+      console.error('Error sending to AI:', error)
+      error.value = error.message
+    }
+  }
+
+  // 修改 toggleScreenCapture 函数
+  function toggleScreenCapture() {
+    if (!isCapturing.value) {
+      startContinuousRecording()
+    } else {
+      stopRecording()
     }
   }
 </script>
