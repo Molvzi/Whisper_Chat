@@ -115,16 +115,25 @@
 
       const testConnection = async () => {
         try {
-          const response = await fetch(apiUrlLocal.value, {
+          const fullUrl = `${apiUrlLocal.value}/v1/chat/completions`
+            .replace(/\/+/g, '/')
+            .replace(':/', '://')
+
+          const response = await fetch(fullUrl, {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${apiKeyLocal.value}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              model: 'deepseek-ai/deepseek-vl2',
-              messages: [{ role: 'user', content: 'test' }],
-              max_tokens: 512,
+              model: selectedModel.value || 'deepseek-chat',
+              messages: [
+                {
+                  role: 'user',
+                  content: 'Hello'
+                }
+              ],
+              max_tokens: 100,
               temperature: 0.7,
               stream: false
             })
@@ -145,8 +154,8 @@
         if (!apiUrlLocal.value || !apiKeyLocal.value) return
 
         try {
-          const baseUrl = apiUrlLocal.value.replace('/chat/completions', '')
-          const response = await fetch(`${baseUrl}/models?type=text&sub_type=chat`, {
+          const baseUrl = `${apiUrlLocal.value}/v1/models`.replace(/\/+/g, '/').replace(':/', '://')
+          const response = await fetch(baseUrl, {
             headers: {
               Authorization: `Bearer ${apiKeyLocal.value}`
             }
