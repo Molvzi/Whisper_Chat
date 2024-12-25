@@ -61,7 +61,7 @@
 </template>
 
 <script lang="ts">
-  import { defineComponent, ref, watch } from 'vue'
+  import { defineComponent, ref, watch, onMounted } from 'vue'
 
   interface ModelData {
     id: string
@@ -80,8 +80,8 @@
     },
     emits: ['update:modelValue', 'update:apiKey', 'update:apiUrl', 'update:model'],
     setup(props, { emit }) {
-      const apiKeyLocal = ref(props.apiKey || '')
-      const apiUrlLocal = ref(props.apiUrl || '')
+      const apiKeyLocal = ref(props.apiKey || localStorage.getItem('apiKey') || '')
+      const apiUrlLocal = ref(props.apiUrl || localStorage.getItem('apiUrl') || '')
       const models = ref<ModelData[]>([])
       const selectedModel = ref(props.model || '')
 
@@ -101,10 +101,12 @@
 
       watch(apiKeyLocal, (newVal) => {
         emit('update:apiKey', newVal)
+        localStorage.setItem('apiKey', newVal)
       })
 
       watch(apiUrlLocal, (newVal) => {
         emit('update:apiUrl', newVal)
+        localStorage.setItem('apiUrl', newVal)
       })
 
       const toggleSettings = () => {
@@ -175,6 +177,10 @@
           selectedModel.value = newVal || ''
         }
       )
+
+      onMounted(() => {
+        fetchModels()
+      })
 
       return {
         apiKeyLocal,
