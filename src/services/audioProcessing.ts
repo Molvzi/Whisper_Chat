@@ -1,126 +1,307 @@
 import { startScreenCapture, getAudioTrack } from './screenCapture'
+import { FFmpeg } from '@ffmpeg/ffmpeg'
+import { fetchFile } from '@ffmpeg/util'
 
 export class AudioProcessor {
-  private mediaRecorder: MediaRecorder | null = null
   private audioContext: AudioContext | null = null
+  private workletNode: AudioWorkletNode | null = null
   private analyser: AnalyserNode | null = null
-  private audioChunks: Blob[] = []
+  private audioData: Float32Array[] = []
   private isRecording: boolean = false
-  private readonly VOLUME_THRESHOLD = 1.5
-  private readonly MAX_CHUNKS = 3
+  private processingTimeout: number | null = null
+  private mediaStream: MediaStream | null = null
+  private readonly VOLUME_THRESHOLD = 0.01
+  private readonly BUFFER_SIZE = 2048
+  private readonly MAX_BUFFERS = 15
+  private source: MediaStreamAudioSourceNode | null = null
+  private lastText: string = ''
+  private debounceTimer: number | null = null
+  private readonly DEBOUNCE_DELAY = 1000
+  private isProcessing: boolean = false
+  private silenceTimer: number | null = null
+  private readonly SILENCE_THRESHOLD = 500
 
   async startRecording(existingStream?: MediaStream): Promise<void> {
     try {
-      const stream = existingStream || (await startScreenCapture())
-      const audioTrack = getAudioTrack(stream)
+      this.mediaStream = existingStream || (await startScreenCapture())
+      const audioTrack = getAudioTrack(this.mediaStream)
 
       if (!audioTrack) throw new Error('No audio track found')
 
-      // 创建音频上下文和分析器
-      this.audioContext = new AudioContext()
-      const source = this.audioContext.createMediaStreamSource(new MediaStream([audioTrack]))
-      this.analyser = this.audioContext.createAnalyser()
-      this.analyser.fftSize = 512
-      source.connect(this.analyser)
+      this.audioContext = new AudioContext({ sampleRate: 16000 })
 
-      // 设置 MediaRecorder
-      const audioStream = new MediaStream([audioTrack])
-      this.mediaRecorder = new MediaRecorder(audioStream, {
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 128000
-      })
+      // 加载 AudioWorklet 处理器
+      await this.audioContext.audioWorklet.addModule(`data:text/javascript,
+        class AudioProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            this.silentCount = 0;
+            this.SILENT_THRESHOLD = 0.01;
+            this.MAX_SILENT_COUNTS = 50;
+          }
 
-      console.log('Audio setup:', {
-        context: 'created',
-        analyser: 'connected',
-        recorder: this.mediaRecorder.state
-      })
+          process(inputs, outputs, parameters) {
+            const input = inputs[0][0];
+            if (input) {
+              const volume = Math.max(...input.map(Math.abs));
 
-      // 设置数据可用事件处理
-      this.mediaRecorder.ondataavailable = async (event) => {
-        console.log('Data available event:', {
-          size: event.data.size,
-          type: event.data.type
-        })
-
-        if (event.data.size > 0) {
-          const hasSound = this.checkAudioLevel()
-          console.log('Audio check:', {
-            hasSound,
-            dataSize: event.data.size
-          })
-
-          if (hasSound) {
-            this.audioChunks.push(event.data)
-            console.log('Chunks collected:', this.audioChunks.length)
-
-            if (this.audioChunks.length >= 2) {
-              // 收集到足够的数据就处理
-              await this.processAudioChunks()
+              if (volume > this.SILENT_THRESHOLD) {
+                this.silentCount = 0;
+                this.port.postMessage({
+                  audioData: input,
+                  volume: volume,
+                  type: 'audio'
+                });
+              } else {
+                this.silentCount++;
+                if (this.silentCount >= this.MAX_SILENT_COUNTS) {
+                  this.port.postMessage({ type: 'silence' });
+                  this.silentCount = 0;
+                }
+              }
             }
+            return true;
+          }
+        }
+        registerProcessor('audio-processor', AudioProcessor);
+      `)
+
+      this.source = this.audioContext.createMediaStreamSource(new MediaStream([audioTrack]))
+      this.analyser = this.audioContext.createAnalyser()
+      this.analyser.fftSize = 2048
+
+      // 创建 AudioWorklet 节点
+      this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor')
+
+      this.workletNode.port.onmessage = (e) => {
+        if (e.data.type === 'silence') {
+          if (!this.silenceTimer) {
+            this.silenceTimer = window.setTimeout(() => {
+              if (this.audioData.length > 0) {
+                this.processAudioData()
+              }
+              this.silenceTimer = null
+            }, this.SILENCE_THRESHOLD)
+          }
+          return
+        }
+
+        const { audioData, volume } = e.data
+        if (volume > this.VOLUME_THRESHOLD && !this.isProcessing) {
+          if (this.silenceTimer) {
+            clearTimeout(this.silenceTimer)
+            this.silenceTimer = null
+          }
+
+          this.audioData.push(new Float32Array(audioData))
+
+          if (this.audioData.length >= this.MAX_BUFFERS) {
+            this.processAudioData()
           }
         }
       }
 
-      // 开始录制
-      this.mediaRecorder.start(1000) // 每秒触发一次 ondataavailable
+      // 连接节点
+      this.source.connect(this.analyser!)
+      this.analyser!.connect(this.workletNode!)
+      this.workletNode!.connect(this.audioContext.destination)
+
       this.isRecording = true
-      console.log('Recording started')
+      console.log('Recording started with settings:', {
+        sampleRate: this.audioContext.sampleRate,
+        bufferSize: this.BUFFER_SIZE
+      })
     } catch (error) {
       console.error('Recording setup error:', error)
+      this.stopRecording()
       throw error
     }
   }
 
-  private checkAudioLevel(): boolean {
-    if (!this.analyser) return false
-
-    const dataArray = new Uint8Array(this.analyser.frequencyBinCount)
-    this.analyser.getByteFrequencyData(dataArray)
-
-    const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length
-    console.log('Audio level:', average)
-
-    return average > this.VOLUME_THRESHOLD
-  }
-
-  private async processAudioChunks() {
-    if (this.audioChunks.length === 0) return
+  private async processAudioData() {
+    if (this.audioData.length === 0 || !this.audioContext || !this.isRecording || this.isProcessing)
+      return
 
     try {
-      const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' })
-      console.log('Processing chunks:', {
-        totalSize: audioBlob.size,
-        chunksCount: this.audioChunks.length
-      })
+      this.isProcessing = true
 
-      const text = await this.sendToSpeechRecognition(audioBlob)
-      console.log('Recognition result:', text)
+      // 合并音频数据
+      const totalLength = this.audioData.reduce((acc, buf) => acc + buf.length, 0)
+      const mergedData = new Float32Array(totalLength)
+      let offset = 0
 
-      if (text?.trim()) {
-        this.onTranscription?.(text)
+      for (const buffer of this.audioData) {
+        mergedData.set(buffer, offset)
+        offset += buffer.length
+      }
+
+      // 创建音频缓冲区
+      const audioBuffer = this.audioContext.createBuffer(
+        1,
+        mergedData.length,
+        this.audioContext.sampleRate
+      )
+      audioBuffer.getChannelData(0).set(mergedData)
+
+      // 转换为 WAV
+      const wavBlob = this.audioBufferToWav(audioBuffer)
+
+      const text = await this.sendToSpeechRecognition(wavBlob)
+      if (text?.trim() && this.isRecording) {
+        if (this.isSimilarText(text, this.lastText)) {
+          return
+        }
+
+        if (this.debounceTimer) {
+          clearTimeout(this.debounceTimer)
+        }
+
+        this.debounceTimer = window.setTimeout(() => {
+          if (this.isRecording) {
+            this.onTranscription?.(text)
+            this.lastText = text
+          }
+        }, this.DEBOUNCE_DELAY)
       }
     } catch (error) {
       console.error('Processing error:', error)
     } finally {
-      this.audioChunks = [] // 清空缓存
+      this.audioData = []
+      this.isProcessing = false
     }
   }
 
-  stopRecording(): void {
-    console.log('Stopping recording')
-    if (this.mediaRecorder && this.isRecording) {
-      this.mediaRecorder.stop()
-      this.isRecording = false
+  private isSimilarText(text1: string, text2: string): boolean {
+    // 如果两个文本完全相同
+    if (text1 === text2) return true
+
+    // 如果其中一个文本包含另一个
+    if (text1.includes(text2) || text2.includes(text1)) return true
+
+    // 计算编辑距离
+    const distance = this.levenshteinDistance(text1, text2)
+    const maxLength = Math.max(text1.length, text2.length)
+
+    // 如果编辑距离小于文本长度的30%，认为是相似的
+    return distance / maxLength < 0.3
+  }
+
+  private levenshteinDistance(str1: string, str2: string): number {
+    const m = str1.length
+    const n = str2.length
+    const dp: number[][] = Array(m + 1)
+      .fill(0)
+      .map(() => Array(n + 1).fill(0))
+
+    for (let i = 0; i <= m; i++) dp[i][0] = i
+    for (let j = 0; j <= n; j++) dp[0][j] = j
+
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (str1[i - 1] === str2[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1]
+        } else {
+          dp[i][j] = Math.min(dp[i - 1][j - 1] + 1, dp[i][j - 1] + 1, dp[i - 1][j] + 1)
+        }
+      }
     }
-    if (this.audioContext) {
-      this.audioContext.close()
+
+    return dp[m][n]
+  }
+
+  async stopRecording(): Promise<void> {
+    if (!this.isRecording) return
+
+    try {
+      // 首先发送停止命令给 worklet
+      if (this.workletNode) {
+        this.workletNode.port.postMessage({ command: 'stop' })
+      }
+
+      // 等待一小段时间确保消息被处理
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      // 断开连接
+      if (this.source) {
+        this.source.disconnect()
+        this.source = null
+      }
+
+      if (this.workletNode) {
+        this.workletNode.disconnect()
+        this.workletNode = null
+      }
+
+      if (this.analyser) {
+        this.analyser.disconnect()
+        this.analyser = null
+      }
+
+      // 关闭音频上下文
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        await this.audioContext.close()
+      }
       this.audioContext = null
+
+      this.audioData = []
+      this.isRecording = false
+
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer)
+        this.debounceTimer = null
+      }
+    } catch (error) {
+      console.error('Error stopping audio processor:', error)
+      throw error
     }
   }
 
-  // 3. 发送音频到语音识别模型
-  async sendToSpeechRecognition(audioBlob: Blob): Promise<string> {
+  private audioBufferToWav(buffer: AudioBuffer): Blob {
+    const numChannels = 1
+    const sampleRate = 16000
+    const format = 1 // PCM
+    const bitDepth = 16
+    const blockAlign = (numChannels * bitDepth) / 8
+    const byteRate = sampleRate * blockAlign
+    const dataSize = buffer.length * blockAlign
+    const bufferSize = 44 + dataSize
+    const arrayBuffer = new ArrayBuffer(bufferSize)
+    const view = new DataView(arrayBuffer)
+
+    // WAV 文件头
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i))
+      }
+    }
+
+    writeString(0, 'RIFF')
+    view.setUint32(4, bufferSize - 8, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, format, true)
+    view.setUint16(22, numChannels, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, byteRate, true)
+    view.setUint16(32, blockAlign, true)
+    view.setUint16(34, bitDepth, true)
+    writeString(36, 'data')
+    view.setUint32(40, dataSize, true)
+
+    // 写入音频数据
+    const channelData = buffer.getChannelData(0)
+    let offset = 44
+    for (let i = 0; i < buffer.length; i++) {
+      const sample = Math.max(-1, Math.min(1, channelData[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      offset += 2
+    }
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' })
+  }
+
+  private async sendToSpeechRecognition(audioBlob: Blob): Promise<string> {
     try {
       const apiUrl = localStorage.getItem('apiUrl')?.replace(/\/$/, '')
       const apiKey = localStorage.getItem('apiKey')
@@ -129,22 +310,16 @@ export class AudioProcessor {
         throw new Error('API settings not configured')
       }
 
-      // 转换音频格式
-      const wavBlob = await this.convertToWav(audioBlob)
-      console.log('Audio conversion:', {
-        originalType: audioBlob.type,
-        originalSize: audioBlob.size,
-        convertedSize: wavBlob.size
-      })
-
+      // 创建一个新的 FormData 对象
       const formData = new FormData()
-      const audioFile = new File([wavBlob], 'audio.wav', {
+      const audioFile = new File([audioBlob], 'audio.wav', {
         type: 'audio/wav',
         lastModified: Date.now()
       })
       formData.append('file', audioFile)
       formData.append('model', 'FunAudioLLM/SenseVoiceSmall')
 
+      // 发送请求
       const response = await fetch(`${apiUrl}/v1/audio/transcriptions`, {
         method: 'POST',
         headers: {
@@ -154,10 +329,7 @@ export class AudioProcessor {
       })
 
       const responseData = await response.json()
-      console.log('API Response:', {
-        status: response.status,
-        data: responseData
-      })
+      console.log('API Response:', responseData)
 
       if (!response.ok) {
         throw new Error(
@@ -172,98 +344,9 @@ export class AudioProcessor {
     }
   }
 
-  // 添加音频格式转换方法
-  private async convertToWav(webmBlob: Blob): Promise<Blob> {
-    return new Promise(async (resolve, reject) => {
-      try {
-        const audioContext = new AudioContext()
-        const arrayBuffer = await webmBlob.arrayBuffer()
-
-        audioContext.decodeAudioData(
-          arrayBuffer,
-          async (audioBuffer) => {
-            // 创建离线上下文
-            const offlineContext = new OfflineAudioContext({
-              numberOfChannels: 1, // 单声道
-              length: audioBuffer.length,
-              sampleRate: 16000 // 设置采样率为16kHz
-            })
-
-            // 创建音频源
-            const source = offlineContext.createBufferSource()
-            source.buffer = audioBuffer
-            source.connect(offlineContext.destination)
-            source.start()
-
-            // 渲染音频
-            const renderedBuffer = await offlineContext.startRendering()
-
-            // 转换为 WAV
-            const wavData = this.audioBufferToWav(renderedBuffer)
-            const wavBlob = new Blob([wavData], { type: 'audio/wav' })
-
-            resolve(wavBlob)
-          },
-          reject
-        )
-      } catch (error) {
-        reject(error)
-      }
-    })
-  }
-
-  // WAV 格式转换辅助方法
-  private audioBufferToWav(buffer: AudioBuffer): ArrayBuffer {
-    const numChannels = 1
-    const sampleRate = buffer.sampleRate
-    const format = 1 // PCM
-    const bitDepth = 16
-    const bytesPerSample = bitDepth / 8
-    const blockAlign = numChannels * bytesPerSample
-    const byteRate = sampleRate * blockAlign
-    const dataSize = buffer.length * blockAlign
-    const bufferSize = 44 + dataSize
-    const arrayBuffer = new ArrayBuffer(bufferSize)
-    const view = new DataView(arrayBuffer)
-
-    // WAV 文件头
-    this.writeString(view, 0, 'RIFF')
-    view.setUint32(4, bufferSize - 8, true)
-    this.writeString(view, 8, 'WAVE')
-    this.writeString(view, 12, 'fmt ')
-    view.setUint32(16, 16, true)
-    view.setUint16(20, format, true)
-    view.setUint16(22, numChannels, true)
-    view.setUint32(24, sampleRate, true)
-    view.setUint32(28, byteRate, true)
-    view.setUint16(32, blockAlign, true)
-    view.setUint16(34, bitDepth, true)
-    this.writeString(view, 36, 'data')
-    view.setUint32(40, dataSize, true)
-
-    // 写入音频数据
-    const channelData = buffer.getChannelData(0)
-    let offset = 44
-    for (let i = 0; i < buffer.length; i++) {
-      const sample = Math.max(-1, Math.min(1, channelData[i]))
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
-      offset += 2
-    }
-
-    return arrayBuffer
-  }
-
-  private writeString(view: DataView, offset: number, string: string): void {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i))
-    }
-  }
-
-  // 取当前录制状态
   isCurrentlyRecording(): boolean {
     return this.isRecording
   }
 
-  // 添加回调函数类型
   onTranscription?: (text: string) => void
 }

@@ -12,7 +12,10 @@
     "lint:fix": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.12",
+    "@ffmpeg/util": "^0.12.1",
     "axios": "^1.7.9",
+    "lamejs": "^1.2.1",
     "vue": "^3.5.13"
   },
   "devDependencies": {

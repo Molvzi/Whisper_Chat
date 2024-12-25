@@ -17,16 +17,16 @@
 
         <button
           @click="toggleScreenCapture"
-          :disabled="isListening"
-          class="w-full flex justify-center items-center px-4 py-3 rounded-md text-white font-medium disabled:bg-gray-400 disabled:cursor-not-allowed enabled:bg-indigo-600 enabled:hover:bg-indigo-700 transition-colors duration-200"
+          class="w-full flex justify-center items-center px-4 py-3 rounded-md text-white font-medium enabled:hover:bg-indigo-700 transition-colors duration-200"
+          :class="isCapturing ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600'"
         >
           <img
             src="../assets/microphone.svg"
-            v-if="isListening"
+            v-if="isCapturing"
             alt="microphone"
             class="w-5 h-5 mr-2"
           />
-          {{ isListening ? '正在识别...' : '开始识别' }}
+          {{ isCapturing ? '停止识别' : '开始识别' }}
         </button>
 
         <div v-if="error" class="mt-4 p-4 bg-red-50 border border-red-200 rounded-md">
@@ -86,6 +86,15 @@
 
   const audioProcessor = ref(new AudioProcessor())
 
+  // 监控历史记录变化
+  watch([transcriptionHistory, timestamps], ([newHistory, newTimestamps]) => {
+    console.log('历史记录更新:', {
+      历史记录: newHistory,
+      时间戳: newTimestamps,
+      数量: newHistory.length
+    })
+  })
+
   async function startContinuousRecording() {
     try {
       isListening.value = true
@@ -116,14 +125,19 @@
 
   async function stopRecording() {
     try {
-      audioProcessor.value.stopRecording()
+      if (audioProcessor.value) {
+        await audioProcessor.value.stopRecording()
+      }
       if (mediaStream.value) {
         stopScreenCapture(mediaStream.value)
         mediaStream.value = null
       }
-    } finally {
-      isCapturing.value = false
+      // 重置状态
       isListening.value = false
+      isCapturing.value = false
+      // 不再重新创建音频处理器，保留历史记录
+    } catch (error) {
+      console.error('Stop recording error:', error)
     }
   }
 
@@ -160,11 +174,11 @@
   }
 
   // 修改 toggleScreenCapture 函数
-  function toggleScreenCapture() {
+  async function toggleScreenCapture() {
     if (!isCapturing.value) {
-      startContinuousRecording()
+      await startContinuousRecording()
     } else {
-      stopRecording()
+      await stopRecording()
     }
   }
 </script>
